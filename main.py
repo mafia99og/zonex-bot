@@ -1,7 +1,7 @@
-# main_v4.py  — ZONE X v4 + NowPayments (checkout)
-import os, asyncio, aiosqlite, uuid, json, zipfile, io, httpx, hmac, hashlib
-from datetime import datetime, timezone, time
-from typing import Dict, Any, Optional
+# main.py — ZONE X v5 (Profile + Wallet + AddBalance + Tickets + MyOrders)
+import os, asyncio, aiosqlite, json, uuid, httpx, hmac, hashlib
+from datetime import datetime, timezone
+from typing import Dict, Optional, Any
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -12,26 +12,21 @@ from telegram import (
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ContextTypes, ConversationHandler, MessageHandler, filters
+    ContextTypes, MessageHandler, filters
 )
 
-# =============== CONFIG & ENV ===============
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = {int(x.strip()) for x in os.getenv("ADMIN_IDS","").split(",") if x.strip()}
-DB_PATH = os.getenv("DB_PATH","zonex.db")
+# ================== ENV ==================
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+DB_PATH   = os.getenv("DB_PATH", "zonex.db")
+ADMIN_IDS = {int(x.strip()) for x in os.getenv("ADMIN_IDS","7697204672").split(",") if x.strip()}
 
-# NowPayments config
-NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY","")
-NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET","")
-NOWPAYMENTS_SANDBOX = os.getenv("NOWPAYMENTS_SANDBOX","true").lower() in ("1","true","yes")
+NOWPAYMENTS_API_KEY     = os.getenv("NOWPAYMENTS_API_KEY", "")
+NOWPAYMENTS_IPN_SECRET  = os.getenv("NOWPAYMENTS_IPN_SECRET", "")
+NOWPAYMENTS_SANDBOX     = os.getenv("NOWPAYMENTS_SANDBOX","true").lower() in ("1","true","yes")
 NOW_BASE = "https://api-sandbox.nowpayments.io/v1" if NOWPAYMENTS_SANDBOX else "https://api.nowpayments.io/v1"
-# Public webhook url you will configure in NowPayments dashboard
-NOW_IPN_ENDPOINT_PUBLIC = os.getenv("NOW_IPN_ENDPOINT_PUBLIC","https://your-public-domain.com/nowpayments_webhook")
+NOW_IPN_ENDPOINT_PUBLIC = os.getenv("NOW_IPN_ENDPOINT_PUBLIC","https://zonex-bot.onrender.com/nowpayments_webhook")
 
-# Reset DB flag (use only when you want to recreate DB)
-RESET_DB_ON_START = False
-
-# =============== DB SCHEMA & PRESET ===============
+# ================== DB ==================
 INIT_SQL = """
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS users(
@@ -69,11 +64,6 @@ CREATE TABLE IF NOT EXISTS reviews(
   text TEXT,
   created_at TEXT
 );
-CREATE TABLE IF NOT EXISTS dictionary(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  content TEXT,
-  created_at TEXT
-);
 CREATE TABLE IF NOT EXISTS tickets(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER,
@@ -85,7 +75,7 @@ CREATE TABLE IF NOT EXISTS tickets(
 );
 """
 
-PRODUCT_PRESET = [
+PRODUCTS = [
   ("apl001","Măr","weedulescu",1.50,40,"Mere crocante."),
   ("ban001","Banane","coxoleanu",2.40,30,"Banane bio."),
   ("cps001","Căpșună","3cemecescu",3.00,50,"Căpșuni aromate."),
@@ -95,396 +85,379 @@ PRODUCT_PRESET = [
   ("str001","Struguri","bobitele",2.80,35,"Struguri dulci.")
 ]
 
-REVIEWS_PRESET = [
-    # 20 anonymous positive reviews (mixed, some city-specific)
-    ("General","⭐⭐⭐⭐⭐ Gust fin, calitate top. Recomand!"),
-    ("General","⭐⭐⭐⭐⭐ Ambalaj discret, livrare rapidă."),
-    ("General","⭐⭐⭐⭐⭐ Produsele sunt bine ascunse și proaspete."),
-    ("Cluj","⭐⭐⭐⭐⭐ Cluj — rapid și discret, aroma e exactă."),
-    ("Constanța","⭐⭐⭐⭐⭐ Constanța — ambalaj perfect, multumesc!"),
-    ("General","⭐⭐⭐⭐⭐ Aroma intensă, o surpriză plăcută."),
-    ("Ploiești","⭐⭐⭐⭐⭐ Ploiești — sosit curat, 5/5."),
-    ("General","⭐⭐⭐⭐⭐ Cantitate bună, calitate premium."),
-    ("Brașov","⭐⭐⭐⭐⭐ Brașov — gust excelent și comunicare ok."),
-    ("General","⭐⭐⭐⭐⭐ Totul discret și foarte bine pus."),
-    ("Galați","⭐⭐⭐⭐⭐ Galați — impresionant calitatea."),
-    ("General","⭐⭐⭐⭐⭐ Rapid, discreet și gustos."),
-    ("Craiova","⭐⭐⭐⭐⭐ Craiova — recomanda!"),
-    ("Alexandria","⭐⭐⭐⭐⭐ Alexandria — prezentare impecabilă."),
-    ("Călărași","⭐⭐⭐⭐⭐ Călărași — a meritat așteptarea."),
-    ("General","⭐⭐⭐⭐⭐ Perfect ambalat, gust autentic."),
-    ("Cluj","⭐⭐⭐⭐⭐ Cluj — excelent raport calitate/preț."),
-    ("General","⭐⭐⭐⭐⭐ Merită toți banii, recomand sincer."),
-    ("Braila","⭐⭐⭐⭐⭐ Brăila — totul ok."),
-    ("General","⭐⭐⭐⭐⭐ Experiență de top, mulțumesc!")
+REVIEWS = [
+  ("General","⭐⭐⭐⭐⭐ Gust fin, calitate top. Recomand!"),
+  ("General","⭐⭐⭐⭐⭐ Ambalaj discret, livrare rapidă."),
+  ("General","⭐⭐⭐⭐⭐ Produsele sunt bine ascunse și proaspete."),
+  ("Cluj","⭐⭐⭐⭐⭐ Cluj — rapid și discret, aroma e exactă."),
+  ("Constanța","⭐⭐⭐⭐⭐ Constanța — ambalaj perfect, mulțumesc!"),
+  ("General","⭐⭐⭐⭐⭐ Aroma intensă, o surpriză plăcută."),
+  ("Ploiești","⭐⭐⭐⭐⭐ Ploiești — sosit curat, 5/5."),
+  ("General","⭐⭐⭐⭐⭐ Cantitate bună, calitate premium."),
+  ("Brașov","⭐⭐⭐⭐⭐ Brașov — gust excelent și comunicare ok."),
+  ("General","⭐⭐⭐⭐⭐ Totul discret și foarte bine pus."),
+  ("Galați","⭐⭐⭐⭐⭐ Galați — impresionant calitatea."),
+  ("General","⭐⭐⭐⭐⭐ Rapid, discreet și gustos."),
+  ("Craiova","⭐⭐⭐⭐⭐ Craiova — recomandă!"),
+  ("Alexandria","⭐⭐⭐⭐⭐ Alexandria — prezentare impecabilă."),
+  ("Călărași","⭐⭐⭐⭐⭐ Călărași — a meritat așteptarea."),
+  ("General","⭐⭐⭐⭐⭐ Perfect ambalat, gust autentic."),
+  ("Cluj","⭐⭐⭐⭐⭐ Cluj — excelent raport calitate/preț."),
+  ("General","⭐⭐⭐⭐⭐ Merită toți banii, recomand sincer."),
+  ("Brăila","⭐⭐⭐⭐⭐ Brăila — totul ok."),
+  ("General","⭐⭐⭐⭐⭐ Experiență de top, mulțumesc!")
 ]
 
-# =============== DB HELPERS ===============
+CART: Dict[int, Dict[str,int]] = {}
+
+def money(x: float) -> str: return f"{x:.2f} EUR"
+def now() -> str: return datetime.now(timezone.utc).isoformat()
+
 async def db():
     con = await aiosqlite.connect(DB_PATH)
     con.row_factory = aiosqlite.Row
     return con
 
-async def seed_products(con):
-    cur = await con.execute("SELECT COUNT(*) c FROM products")
-    c = (await cur.fetchone())["c"]
-    if c == 0:
-        await con.executemany(
-            "INSERT INTO products(id,name,alias,price,stock,description) VALUES(?,?,?,?,?,?)",
-            PRODUCT_PRESET
-        )
-
-async def seed_reviews(con):
-    cur = await con.execute("SELECT COUNT(*) c FROM reviews")
-    c = (await cur.fetchone())["c"]
-    if c == 0:
-        for city, text in REVIEWS_PRESET:
-            await con.execute("INSERT INTO reviews(user_id,product_id,rating,text,created_at) VALUES(?,?,?,?,?)",
-                              (0, "", 5, text, datetime.now(timezone.utc).isoformat()))
-
 async def init_db():
     con = await db()
-    for stmt in [s.strip() for s in INIT_SQL.strip().split(";") if s.strip()]:
+    for stmt in [s.strip() for s in INIT_SQL.split(";") if s.strip()]:
         await con.execute(stmt)
-    await seed_products(con)
-    await seed_reviews(con)
-    await con.commit()
-    await con.close()
+    cur = await con.execute("SELECT COUNT(*) c FROM products"); c = (await cur.fetchone())["c"]
+    if c == 0:
+        await con.executemany("INSERT INTO products(id,name,alias,price,stock,description) VALUES(?,?,?,?,?,?)", PRODUCTS)
+    cur = await con.execute("SELECT COUNT(*) c FROM reviews"); c = (await cur.fetchone())["c"]
+    if c == 0:
+        for city, text in REVIEWS:
+            await con.execute("INSERT INTO reviews(user_id,product_id,rating,text,created_at) VALUES(?,?,?,?,?)",
+                              (0, "", 5, text, now()))
+    await con.commit(); await con.close()
 
-async def reset_db():
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
-    await init_db()
+async def ensure_user(u, ref: Optional[int] = None):
+    con = await db()
+    await con.execute("""INSERT OR IGNORE INTO users(user_id,username,first_seen,ref_by,balance,referrals_count)
+                         VALUES(?,?,?,?,0,0)""", (u.id, u.username or "", now(), ref))
+    if ref and ref != u.id:
+        await con.execute("UPDATE users SET referrals_count = referrals_count + 1, balance = balance + 1 WHERE user_id=?",(ref,))
+    await con.commit(); await con.close()
 
-# =============== BASIC HELPERS ===============
-CART: Dict[int, Dict[str,int]] = {}
-def get_cart(uid:int): return CART.setdefault(uid,{})
-def money(v: float)->str: return f"{v:.2f} EUR"
-def now_iso() -> str: return datetime.now(timezone.utc).isoformat()
-
-async def typing(chat_id: int, context: ContextTypes.DEFAULT_TYPE, sec: float = 0.3):
+async def typing(chat_id:int, context:ContextTypes.DEFAULT_TYPE, sec:float=0.2):
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         await asyncio.sleep(sec)
     except Exception:
         pass
 
-def safe_kb(rows) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(rows)
-
-def welcome_text(u):
-    return (
-        "🟩 <b>ZONE X – Exotic Fruits (v4)</b>\n"
-        f"Bun venit, {u.full_name}!\n\n"
-        "🔗 <b>Linkuri utile:</b>\n"
-        f"• Main: <a href='https://t.me/zonexhub'>link</a>\n"
-        f"• Support: <a href='https://t.me/zonex_supportteam'>link</a>\n\n"
-        "💡 Folosește <code>/menu</code> pentru produse, <code>/wallet</code> pentru puncte & referral, "
-        "<code>/dictionary</code> pentru postări publice."
-    )
-
-# =============== NOWPAYMENTS helpers (async) ===============
-async def create_now_invoice(order_id: str, amount_eur: float, order_description: str):
-    """
-    Creează invoice la NowPayments și returnează dictul răspuns.
-    """
+# ================== NOWPAYMENTS ==================
+async def create_invoice(order_id: str, amount_eur: float, description: str) -> dict:
     url = f"{NOW_BASE}/invoice"
-    headers = {
-        "x-api-key": NOWPAYMENTS_API_KEY,
-        "Content-Type": "application/json"
-    }
+    headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type":"application/json"}
     payload = {
-        "price_amount": round(amount_eur, 2),
+        "price_amount": round(amount_eur,2),
         "price_currency": "eur",
         "order_id": order_id,
-        "order_description": order_description,
+        "order_description": description,
         "ipn_callback_url": NOW_IPN_ENDPOINT_PUBLIC
     }
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(url, headers=headers, json=payload)
+        # dacă e 403, arătăm mesaj clar
+        if r.status_code == 403:
+            raise RuntimeError("NOWPayments a respins cheia (403). Verifică: Sandbox key + IPN URL + IPN secret.")
         r.raise_for_status()
         return r.json()
 
-def verify_nowpayments_signature(body_bytes: bytes, header_sig: str) -> bool:
-    """
-    Verifică HMAC SHA-512 generat de NowPayments.
-    Documentația specifică sortarea cheilor JSON; implementare defensivă.
-    """
-    if not NOWPAYMENTS_IPN_SECRET:
-        return False
-    try:
-        body_json = json.loads(body_bytes)
-    except Exception:
-        return False
-    ordered = {k: body_json[k] for k in sorted(body_json.keys())}
-    ordered_str = json.dumps(ordered, separators=(',', ':'), ensure_ascii=False)
-    computed = hmac.new(NOWPAYMENTS_IPN_SECRET.encode(), ordered_str.encode('utf-8'), hashlib.sha512).hexdigest()
-    return hmac.compare_digest(computed, header_sig)
+# ================== UI TEXTS ==================
+def welcome_text(u):
+    return (
+        "🟩 <b>ZONE X – Exotic Fruits (v5)</b>\n"
+        f"Bun venit, {u.full_name}!\n\n"
+        "🔗 <b>Linkuri utile:</b>\n"
+        "• Main: <a href='https://t.me/zonexhub'>link</a>\n"
+        "• Support: <a href='https://t.me/zonex_supportteam'>link</a>\n\n"
+        "💡 /menu pentru produse, /profile pentru profil complet."
+    )
 
-# =============== USER / MENU / CART / CHECKOUT ===============
-async def ensure_user(u, ref: Optional[int] = None):
-    con = await db()
-    await con.execute("""INSERT OR IGNORE INTO users(user_id,username,first_seen,ref_by,balance,referrals_count)
-                         VALUES(?,?,?,?,0,0)""",
-                      (u.id, u.username or "", now_iso(), ref))
-    if ref and ref != u.id:
-        await con.execute("UPDATE users SET referrals_count = referrals_count + 1, balance = balance + 1 WHERE user_id=?",(ref,))
-    await con.commit()
-    await con.close()
+# ================== HANDLERS ==================
+async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    ref = None
+    if update.message and update.message.text and "start=ref_" in update.message.text:
+        try: ref = int(update.message.text.split("start=ref_")[1])
+        except: pass
+    await ensure_user(u, ref)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # if user has no city, we can ask to choose; for simplicity, show menu and city command separately
-    await ensure_user(update.effective_user)
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🛒 Vezi produsele", callback_data="p:open"),
-         InlineKeyboardButton("📚 DICTIONAR", callback_data="dict:open")],
-        [InlineKeyboardButton("👛 Portofel", callback_data="wallet:open"),
-         InlineKeyboardButton("🎯 Referral", callback_data="ref:open")]
+         InlineKeyboardButton("👤 Profile", callback_data="profile:open")]
     ])
     await typing(update.effective_chat.id, context)
-    await update.message.reply_text(welcome_text(update.effective_user),
-                                    parse_mode=ParseMode.HTML, reply_markup=kb)
+    await update.message.reply_text(welcome_text(u), parse_mode=ParseMode.HTML, reply_markup=kb)
 
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def menu_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     await open_products(update.effective_message, context)
 
 async def open_products(msg, context):
     con = await db()
     cur = await con.execute("SELECT * FROM products ORDER BY name")
-    items = await cur.fetchall()
-    await con.close()
+    items = await cur.fetchall(); await con.close()
     rows = []
     for r in items:
-        label = f"{r['name']} ({r['alias']}) — {money(r['price'])} — stoc {r['stock']}"
-        rows.append([InlineKeyboardButton(label, callback_data=f"p:add:{r['id']}")])
-    rows.append([InlineKeyboardButton("🧺 Coș", callback_data="cart:open")])
-    await typing(msg.chat_id, context)
-    await msg.reply_text("🛒 <b>Produse disponibile:</b>",
-                         parse_mode=ParseMode.HTML, reply_markup=safe_kb(rows))
+        rows.append([InlineKeyboardButton(f"{r['name']} ({r['alias']}) — {money(r['price'])} — stoc {r['stock']}",
+                                          callback_data=f"p:add:{r['id']}")])
+    rows.append([InlineKeyboardButton("🧺 Coș", callback_data="cart:open"),
+                 InlineKeyboardButton("⬅️ Înapoi", callback_data="home")])
+    await msg.reply_text("🛒 <b>Produse disponibile:</b>", parse_mode=ParseMode.HTML,
+                         reply_markup=InlineKeyboardMarkup(rows))
 
-def cart_summary(uid:int, items):
-    if not items: return "🧺 Coșul este gol."
-    lines = ["🧺 <b>Coșul tău:</b>", "Apasă <b>Checkout</b> pentru calcul preț și stoc."]
-    for pid, qty in items.items(): lines.append(f"• <code>{pid}</code> x{qty}")
+def cart_summary(uid:int):
+    c = CART.get(uid,{})
+    if not c: return "🧺 Coșul este gol."
+    lines = ["🧺 <b>Coșul tău:</b>"]
+    for pid, qty in c.items(): lines.append(f"• <code>{pid}</code> x{qty}")
     return "\n".join(lines)
 
-# =============== CALLBACKS (cart / checkout) ===============
-async def on_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def profile_open(msg, context, uid:int):
+    con = await db()
+    cur = await con.execute("SELECT balance, referrals_count, city FROM users WHERE user_id=?", (uid,))
+    u = await cur.fetchone(); await con.close()
+    me = await context.bot.get_me()
+    ref_link = f"https://t.me/{me.username}?start=ref_{uid}"
+    text = (
+        "👤 <b>Profil</b>\n"
+        f"• City: <b>{u['city'] or '-'}</b>\n"
+        f"• Balance: <b>{u['balance']:.2f}</b> puncte\n"
+        f"• Referrals: <b>{u['referrals_count']}</b>\n\n"
+        f"🎯 Referral link:\n<code>{ref_link}</code>"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 Add balance", callback_data="wallet:add")],
+        [InlineKeyboardButton("🧾 My orders", callback_data="orders:mine")],
+        [InlineKeyboardButton("🎟️ Tickets", callback_data="tickets:open")],
+        [InlineKeyboardButton("⬅️ Înapoi", callback_data="home")]
+    ])
+    await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+async def wallet_add(q, context):
+    # facem o „comandă” de top-up (order special)
+    uid = q.from_user.id
+    amount = 5.0  # top-up fix (poți schimba; sau poți cere user-ului o sumă)
+    order_id = "TOPUP_" + uuid.uuid4().hex[:10]
+    con = await db()
+    await con.execute("INSERT INTO orders(id,user_id,items_json,amount,status,created_at) VALUES(?,?,?,?,?,?)",
+                      (order_id, uid, json.dumps([("balance_topup","",1,amount)]), amount, "pending", now()))
+    await con.commit()
+    try:
+        inv = await create_invoice(order_id, amount, f"ZoneX top-up {order_id}")
+        inv_id = inv.get("id") or inv.get("invoice_id") or inv.get("data",{}).get("id")
+        url = inv.get("invoice_url") or inv.get("payment_url") or inv.get("url") or inv.get("data",{}).get("invoice_url")
+        await con.execute("UPDATE orders SET invoice_id=?, payment_url=? WHERE id=?", (inv_id, url, order_id))
+        await con.commit(); await con.close()
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Plătește top-up", url=url)],
+                                   [InlineKeyboardButton("🧾 My orders", callback_data="orders:mine")]])
+        await q.message.reply_text(
+            f"💰 <b>Add balance</b>\nSuma: <b>{money(amount)}</b>\n\nLink plată:\n{url}",
+            parse_mode=ParseMode.HTML, reply_markup=kb
+        )
+    except Exception as e:
+        await con.execute("UPDATE orders SET status='error' WHERE id=?", (order_id,))
+        await con.commit(); await con.close()
+        await q.message.reply_text(f"❌ Eroare la creare factură: {e}")
+
+async def orders_mine(msg, uid:int):
+    con = await db()
+    cur = await con.execute("SELECT id, amount, status, created_at FROM orders WHERE user_id=? ORDER BY datetime(created_at) DESC LIMIT 10", (uid,))
+    rows = await cur.fetchall(); await con.close()
+    if not rows:
+        await msg.reply_text("🧾 Nu ai comenzi încă.")
+        return
+    lines = ["🧾 <b>Ultimele tale comenzi</b>"]
+    for r in rows:
+        lines.append(f"• <code>{r['id']}</code> — {money(r['amount'])} — <b>{r['status']}</b> — {r['created_at'][:19]}")
+    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+# Tickets – very simple flow: list/create
+USER_NEW_TICKET: Dict[int, Dict[str,str]] = {}
+
+async def tickets_open(msg, uid:int):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Create ticket", callback_data="tickets:new")],
+        [InlineKeyboardButton("📋 My tickets", callback_data="tickets:list")]
+    ])
+    await msg.reply_text("🎟️ <b>Tickets</b> — creează sau vizualizează.", parse_mode=ParseMode.HTML, reply_markup=kb)
+
+async def tickets_new_start(q):
+    USER_NEW_TICKET[q.from_user.id] = {"stage":"title"}
+    await q.message.reply_text("📝 Trimite <b>titlul</b> ticket-ului:", parse_mode=ParseMode.HTML)
+
+async def tickets_list(msg, uid:int):
+    con = await db()
+    cur = await con.execute("SELECT id,title,status,created_at FROM tickets WHERE user_id=? ORDER BY id DESC LIMIT 10", (uid,))
+    rows = await cur.fetchall(); await con.close()
+    if not rows:
+        await msg.reply_text("📋 Nu ai tickets încă.")
+        return
+    lines = ["📋 <b>Tickets</b>"]
+    for r in rows:
+        lines.append(f"• #{r['id']} — <b>{r['title']}</b> — <code>{r['status']}</code> — {r['created_at'][:19]}")
+    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+async def on_message(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid in USER_NEW_TICKET:
+        st = USER_NEW_TICKET[uid]
+        if st["stage"] == "title":
+            st["title"] = update.message.text[:100]
+            st["stage"] = "body"
+            await update.message.reply_text("✍️ Acum trimite <b>descrierea</b> (poți adăuga link imgur dacă ai poză).", parse_mode=ParseMode.HTML)
+            return
+        if st["stage"] == "body":
+            st["body"] = update.message.text[:2000]
+            con = await db()
+            await con.execute("INSERT INTO tickets(user_id,title,body,status,assigned_to,created_at) VALUES(?,?,?,?,?,?)",
+                              (uid, st["title"], st["body"], "open", None, now()))
+            await con.commit(); await con.close()
+            USER_NEW_TICKET.pop(uid, None)
+            await update.message.reply_text("✅ Ticket creat. Un admin te va contacta aici.")
+            # notificăm adminii
+            for aid in ADMIN_IDS:
+                try:
+                    await context.bot.send_message(aid, f"🆕 Ticket nou de la {uid}\nTitlu: {st['title']}\nBody:\n{st['body']}")
+                except: pass
+
+# ================== CALLBACKS ==================
+async def on_cb(update:Update, context:ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
+
+    if data == "home":
+        await q.message.reply_text("🏠 Home. /menu sau /profile")
+        return
 
     if data == "p:open":
         await open_products(q.message, context); return
 
     if data.startswith("p:add:"):
         pid = data.split(":")[2]
-        c = get_cart(q.from_user.id)
+        c = CART.setdefault(q.from_user.id,{})
         c[pid] = c.get(pid,0)+1
-        await typing(q.message.chat_id, context, 0.2)
         await q.message.reply_text("➕ Adăugat în coș.")
         return
 
     if data == "cart:open":
-        items = get_cart(q.from_user.id)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 Checkout", callback_data="cart:checkout")],
+            [InlineKeyboardButton("💳 Checkout (total & plată)", callback_data="cart:checkout")],
             [InlineKeyboardButton("⬅️ Înapoi", callback_data="p:open")]
         ])
-        await typing(q.message.chat_id, context, 0.2)
-        await q.message.reply_text(cart_summary(q.from_user.id, items),
-                                   parse_mode=ParseMode.HTML, reply_markup=kb)
+        await q.message.reply_text(cart_summary(q.from_user.id), parse_mode=ParseMode.HTML, reply_markup=kb)
         return
 
     if data == "cart:checkout":
-        c = get_cart(q.from_user.id)
+        uid = q.from_user.id
+        c = CART.get(uid,{})
         if not c:
-            await q.message.reply_text("Coșul este gol."); return
+            await q.message.reply_text("Coșul e gol."); return
         con = await db()
-        total = 0.0
-        detail = []
+        total = 0.0; detail = []
         for pid, qty in c.items():
             cur = await con.execute("SELECT id,name,price,stock FROM products WHERE id=?", (pid,))
-            row = await cur.fetchone()
-            if not row:
-                await q.message.reply_text(f"Produsul {pid} nu există."); await con.close(); return
-            if row["stock"] < qty:
-                await q.message.reply_text(f"Stoc insuficient pentru {row['name']} (disponibil {row['stock']})."); await con.close(); return
-            total += row["price"] * qty
-            detail.append((row["id"], row["name"], qty, row["price"]))
+            r = await cur.fetchone()
+            if not r: await q.message.reply_text(f"Produsul {pid} nu există."); await con.close(); return
+            if r["stock"] < qty: await q.message.reply_text(f"Stoc insuficient pentru {r['name']} (disponibil {r['stock']})."); await con.close(); return
+            total += r["price"]*qty; detail.append((r["id"], r["name"], qty, r["price"]))
         order_id = uuid.uuid4().hex[:12]
-        # save order as pending
-        await con.execute(
-            "INSERT INTO orders(id,user_id,items_json,amount,status,created_at) VALUES(?,?,?,?,?,?)",
-            (order_id, q.from_user.id, json.dumps(detail), total, "pending", now_iso())
-        )
+        await con.execute("INSERT INTO orders(id,user_id,items_json,amount,status,created_at) VALUES(?,?,?,?,?,?)",
+                          (order_id, uid, json.dumps(detail), total, "pending", now()))
         await con.commit()
-        # create NowPayments invoice
         try:
-            invoice = await create_now_invoice(order_id, total, f"Order {order_id} - ZONE X")
-            invoice_id = invoice.get("id") or invoice.get("invoice_id") or invoice.get("data",{}).get("id")
-            payment_url = invoice.get("invoice_url") or invoice.get("payment_url") or invoice.get("url") or invoice.get("data",{}).get("invoice_url")
-            # update order with invoice fields
-            await con.execute("UPDATE orders SET invoice_id=?, payment_url=? WHERE id=?", (invoice_id, payment_url, order_id))
-            await con.commit()
-            await con.close()
-            await typing(q.message.chat_id, context)
-            text = (
-                f"🧾 Comanda <code>{order_id}</code>\nTotal: <b>{money(total)}</b>\n\n"
-                f"Urmează să plătești cu crypto — folosește linkul de mai jos:\n{payment_url}\n\n"
-                "🔔 După confirmarea plății vei primi notificare automat. Dacă vrei, adminii pot marca manual comanda cu /markpaid <order_id>."
+            inv = await create_invoice(order_id, total, f"Order {order_id} - ZONEX")
+            inv_id = inv.get("id") or inv.get("invoice_id") or inv.get("data",{}).get("id")
+            url = inv.get("invoice_url") or inv.get("payment_url") or inv.get("url") or inv.get("data",{}).get("invoice_url")
+            await con.execute("UPDATE orders SET invoice_id=?, payment_url=? WHERE id=?", (inv_id, url, order_id))
+            await con.commit(); await con.close()
+            CART[uid] = {}
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Plătește acum", url=url)],
+                                       [InlineKeyboardButton("🧾 My orders", callback_data="orders:mine")]])
+            await q.message.reply_text(
+                f"🧾 Comanda <code>{order_id}</code>\nTotal: <b>{money(total)}</b>\n\nLink plată:\n{url}",
+                parse_mode=ParseMode.HTML, reply_markup=kb
             )
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Plătește acum", url=payment_url)]])
-            await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-            # clear cart
-            CART[q.from_user.id] = {}
         except Exception as e:
             await con.execute("UPDATE orders SET status='error' WHERE id=?", (order_id,))
             await con.commit(); await con.close()
             await q.message.reply_text(f"❌ Eroare la creare factură: {e}")
         return
 
-    if data == "wallet:open":
-        con = await db()
-        cur = await con.execute("SELECT balance, referrals_count FROM users WHERE user_id=?", (q.from_user.id,))
-        row = await cur.fetchone(); await con.close()
-        me = await context.bot.get_me()
-        ref_link = f"https://t.me/{me.username}?start=ref_{q.from_user.id}"
-        await typing(q.message.chat_id, context, 0.2)
-        await q.message.reply_text(
-            f"👛 <b>Portofel ZONE X</b>\n"
-            f"• Sold puncte: <b>{row['balance']:.0f}</b>\n"
-            f"• Referals: <b>{row['referrals_count']}</b>\n\n"
-            f"🔗 Linkul tău de invitație:\n<code>{ref_link}</code>",
-            parse_mode=ParseMode.HTML
-        )
-        return
+    if data == "profile:open":
+        await profile_open(q.message, context, q.from_user.id); return
 
-    if data == "ref:open":
-        await q.message.reply_text("Invită prieteni cu linkul tău din Portofel. Primești 1 punct pentru fiecare user nou.")
-        return
+    if data == "wallet:add":
+        await wallet_add(q, context); return
 
-    if data == "dict:open":
-        await show_dictionary(q.message); return
+    if data == "orders:mine":
+        await orders_mine(q.message, q.from_user.id); return
 
-# =============== DICTIONAR / REVIEWS / TICKETS / PROFILE etc ===============
-# (omitem aici restul codului re-used din v3 pentru concizie — păstrează celelalte funcționalități
-# precum review flow, tickets, profile, adminpanel, stats, backup etc. în fișierul final)
-# Pentru brevitate în acest răspuns am inclus doar părțile esențiale + checkout/nowpayments.
-# În pachetul pe care ți-l trimit, fișierul include toate funcțiile v4 discutate.
+    if data == "tickets:open":
+        await tickets_open(q.message, q.from_user.id); return
+    if data == "tickets:new":
+        await tickets_new_start(q); return
+    if data == "tickets:list":
+        await tickets_list(q.message, q.from_user.id); return
 
-# =============== ADMIN: markpaid (manual) ===============
-async def markpaid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================== COMMANDS ==================
+async def profile_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    await profile_open(update.effective_message, context, update.effective_user.id)
+
+async def wallet_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    # redirecționez către profile (acolo e și add balance)
+    await profile_open(update.effective_message, context, update.effective_user.id)
+
+async def markpaid_cmd(update:Update, context:ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("Nu ai drepturi de admin."); return
-    if not context.args:
-        await update.message.reply_text("Usage: /markpaid <order_id>"); return
+        return await update.message.reply_text("Nu ai drepturi.")
+    if not context.args: return await update.message.reply_text("Usage: /markpaid <order_id>")
     oid = context.args[0].strip()
     con = await db()
-    cur = await con.execute("SELECT user_id, status FROM orders WHERE id=?", (oid,))
+    cur = await con.execute("SELECT user_id, amount, status FROM orders WHERE id=?", (oid,))
     row = await cur.fetchone()
-    if not row:
-        await update.message.reply_text("Comanda nu exista.")
-        await con.close(); return
+    if not row: await update.message.reply_text("Comanda nu există."); await con.close(); return
     await con.execute("UPDATE orders SET status='paid' WHERE id=?", (oid,))
-    await con.commit()
-    # notify user
-    uid = row["user_id"]
+    # opțional: adaugă puncte când se plătește top-up
+    if oid.startswith("TOPUP_"):
+        await con.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (row["amount"], row["user_id"]))
+    await con.commit(); await con.close()
     try:
-        bot = context.bot
-        await bot.send_message(uid, f"✅ Plata pentru comanda <code>{oid}</code> a fost confirmată de admin. Mulțumim!", parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
-    await con.close()
-    await update.message.reply_text("✅ Comanda marcată ca plată.")
+        await context.bot.send_message(row["user_id"], f"✅ Plata pentru <code>{oid}</code> confirmată. Mulțumim!", parse_mode=ParseMode.HTML)
+    except: pass
+    await update.message.reply_text("✅ Marcat ca paid.")
 
-# =============== APP ENTRYPOINT ===============
+# ================== APP ==================
 async def main():
-    if RESET_DB_ON_START:
-        await reset_db()
-    else:
-        await init_db()
-
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN lipsă.")
+    await init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Add handlers (full v4 includes many more; ensure to add them here)
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu))
-    app.add_handler(CallbackQueryHandler(on_cb))
+    app.add_handler(CommandHandler("menu", menu_cmd))
+    app.add_handler(CommandHandler("profile", profile_cmd))
+    app.add_handler(CommandHandler("wallet", wallet_cmd))
     app.add_handler(CommandHandler("markpaid", markpaid_cmd))
-
-    # admin commands for stats/backup/reset/postdict/broadcast must be added here as in v3
-
-    # app.job_queue.run_daily(lambda c: None, time=time(hour=10, minute=0), name="daily_stock")  # placeholder
+    app.add_handler(CallbackQueryHandler(on_cb))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
     await app.bot.set_my_commands([
-        BotCommand("start", "Pornește botul"),
-        BotCommand("menu", "Vezi produsele"),
-        BotCommand("wallet", "Portofel & referral"),
-        BotCommand("review", "Lasă o recenzie"),
-        BotCommand("dictionary", "Vezi DICTIONAR"),
-        BotCommand("admin", "Admin menu"),
+        BotCommand("start","Pornește botul"),
+        BotCommand("menu","Vezi produsele"),
+        BotCommand("profile","Profil / Wallet / Orders / Tickets"),
+        BotCommand("wallet","Portofel & Add balance"),
     ])
-    print("ZONE X bot v4 online.")
+    print("ZONE X bot v5 online.")
     await app.run_polling()
 
 if __name__ == "__main__":
     import platform, nest_asyncio
-    from flask import Flask, request
-
-    # Flask app pentru webhook / health check
-    web = Flask(__name__)
-
-    @web.route('/')
-    def index():
-        return "ZONE X bot v4 online ✅"
-
-    @web.route('/nowpayments_webhook', methods=["POST"])
-    def nowpayments_webhook():
-        try:
-            sig = request.headers.get("x-nowpayments-sig", "")
-            body = request.data
-            if verify_nowpayments_signature(body, sig):
-                data = request.json
-                print("💰 Webhook primit:", data)
-                # Aici se pot marca plățile ca finalizate automat dacă vrei
-                return {"status": "ok"}, 200
-            else:
-                return {"status": "invalid-signature"}, 400
-        except Exception as e:
-            return {"error": str(e)}, 500
-
-    async def run_bot():
-        if RESET_DB_ON_START:
-            await reset_db()
-        else:
-            await init_db()
-
-        app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-        # Handlers
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("menu", menu))
-        app.add_handler(CallbackQueryHandler(on_cb))
-        app.add_handler(CommandHandler("markpaid", markpaid_cmd))
-
-        await app.bot.set_my_commands([
-            BotCommand("start", "Pornește botul"),
-            BotCommand("menu", "Vezi produsele"),
-            BotCommand("wallet", "Portofel & referral"),
-            BotCommand("review", "Lasă o recenzie"),
-            BotCommand("dictionary", "Vezi DICTIONAR"),
-            BotCommand("admin", "Admin menu"),
-        ])
-        print("ZONE X bot v4 online (Render mode).")
-        await app.run_polling()
-
-    # === Rulează Flask și botul simultan ===
-    import threading
-    t = threading.Thread(target=lambda: web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))))
-    t.start()
-
     if platform.system() == "Windows":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     nest_asyncio.apply()
-    asyncio.run(run_bot())
+    asyncio.run(main())
