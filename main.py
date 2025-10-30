@@ -415,7 +415,7 @@ async def main():
 
     # admin commands for stats/backup/reset/postdict/broadcast must be added here as in v3
 
-    app.job_queue.run_daily(lambda c: None, time=time(hour=10, minute=0), name="daily_stock")  # placeholder
+    # app.job_queue.run_daily(lambda c: None, time=time(hour=10, minute=0), name="daily_stock")  # placeholder
 
     await app.bot.set_my_commands([
         BotCommand("start", "Pornește botul"),
