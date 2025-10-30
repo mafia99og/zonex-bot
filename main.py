@@ -430,16 +430,61 @@ async def main():
 
 if __name__ == "__main__":
     import platform, nest_asyncio
+    from flask import Flask, request
+
+    # Flask app pentru webhook / health check
+    web = Flask(__name__)
+
+    @web.route('/')
+    def index():
+        return "ZONE X bot v4 online ✅"
+
+    @web.route('/nowpayments_webhook', methods=["POST"])
+    def nowpayments_webhook():
+        try:
+            sig = request.headers.get("x-nowpayments-sig", "")
+            body = request.data
+            if verify_nowpayments_signature(body, sig):
+                data = request.json
+                print("💰 Webhook primit:", data)
+                # Aici se pot marca plățile ca finalizate automat dacă vrei
+                return {"status": "ok"}, 200
+            else:
+                return {"status": "invalid-signature"}, 400
+        except Exception as e:
+            return {"error": str(e)}, 500
+
+    async def run_bot():
+        if RESET_DB_ON_START:
+            await reset_db()
+        else:
+            await init_db()
+
+        app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+        # Handlers
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("menu", menu))
+        app.add_handler(CallbackQueryHandler(on_cb))
+        app.add_handler(CommandHandler("markpaid", markpaid_cmd))
+
+        await app.bot.set_my_commands([
+            BotCommand("start", "Pornește botul"),
+            BotCommand("menu", "Vezi produsele"),
+            BotCommand("wallet", "Portofel & referral"),
+            BotCommand("review", "Lasă o recenzie"),
+            BotCommand("dictionary", "Vezi DICTIONAR"),
+            BotCommand("admin", "Admin menu"),
+        ])
+        print("ZONE X bot v4 online (Render mode).")
+        await app.run_polling()
+
+    # === Rulează Flask și botul simultan ===
+    import threading
+    t = threading.Thread(target=lambda: web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))))
+    t.start()
+
     if platform.system() == "Windows":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     nest_asyncio.apply()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        print("🛑 Bot oprit manual.")
-    except Exception as e:
-        print(f"❌ Eroare: {e}")
-    finally:
-        pass
+    asyncio.run(run_bot())
