@@ -1,0 +1,9 @@
+python-telegram-bot==21.6
+aiohttp
+fastapi
+uvicorn
+python-dotenv
+aiosqlite
+requests
+apscheduler
+nest_asyncio

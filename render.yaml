@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: zonex-bot
+    env: python
+    buildCommand: ""
+    startCommand: uvicorn webhook_nowpayments:app --host 0.0.0.0 --port 10000
+    plan: free
+    envVars:
+      - key: NOWPAYMENTS_API_KEY
+        value: Q4D36BT-A4Q44NM-KGFA3BG-NW4CV64
+      - key: NOWPAYMENTS_IPN_SECRET
+        value: EN2hD7FcllPsf9vuTNeLWHTcepsI1Dhw
+      - key: NOWPAYMENTS_SANDBOX
+        value: true
+      - key: DB_PATH
+        value: zonex.db
